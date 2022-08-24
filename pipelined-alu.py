@@ -3,7 +3,7 @@ from enum import IntEnum
 
 """
 Register instructions:
-op rd rs1 rs2 : rd <- (op rs1 rs2)
+op rd rs2 rs1 : rd <- (op rs1 rs2)
   with op in (ADD|SUB|XOR|AND|OR)
 
 Unconditional branch:
@@ -13,7 +13,7 @@ JUMP immediate : pc <- (add pc immediate)
 WIDTH = 16
 
 class OP(IntEnum):
-    NOP  = 0x0
+    NOP  = 0x0 # Unused
     ADD  = 0x1
     SUB  = 0x2
     XOR  = 0x3
@@ -41,7 +41,7 @@ rf = pyrtl.MemBlock(bitwidth=WIDTH, addrwidth=4, name='rf', asynchronous=True)
 #   `d_` and `x_` indicate which stage the registers are used
 #   (`d` for decode, `x` for execute)
 d_inst = pyrtl.Register(WIDTH, 'd_inst')
-d_pc = pyrtl.Register(WIDTH, 'pc_d')
+d_pc = pyrtl.Register(WIDTH, 'd_pc')
 x_rd = pyrtl.Register(4, 'x_rd')
 x_ctrl_alu_op = pyrtl.Register(4, 'x_ctrl_alu_op')
 x_ctrl_branch = pyrtl.Register(1, 'x_ctrl_branch')
@@ -54,13 +54,17 @@ alu_result = pyrtl.WireVector(WIDTH, 'alu_out')
 
 # Stage 1: Fetch
 # --------------
+branch_taken = pyrtl.WireVector(1, 'branch_taken')
+branch_target = pyrtl.WireVector(WIDTH, 'branch_target')
+
 # Read from instruction memory at current PC
 # Store fetched instruction in instruction register
 # Will be available in the *next* cycle
-d_inst.next <<= imem[pc]
-
-branch_taken = pyrtl.WireVector(1, 'branch_taken')
-branch_target = pyrtl.WireVector(WIDTH, 'branch_target')
+with pyrtl.conditional_assignment:
+    with branch_taken:
+        d_inst.next |= 0x1000 # NOP
+    with pyrtl.otherwise:
+        d_inst.next |= imem[pc]
 
 # Increment PC
 # `|=` is PyRTL's "conditional assignment" operator, used in `with` expressions
@@ -93,7 +97,7 @@ ctrl_alu_op = pyrtl.WireVector(4, 'ctrl_alu_op')
 ctrl_write = pyrtl.WireVector(1, 'ctrl_write')
 
 # Control logic
-#ctrl_alu_op <<= pyrtl.net_hole('hole_ctrl_alu_op', 4, inst_op)
+# Note: We replace this definition with a "hole" in our synthesis scenario.
 ctrl_alu_op <<= pyrtl.enum_mux(
         inst_op,
         {
@@ -101,7 +105,7 @@ ctrl_alu_op <<= pyrtl.enum_mux(
         },
         default=inst_op)
 
-#ctrl_branch <<= pyrtl.net_hole('hole_ctrl_branch', 1, inst_op)
+# Note: We replace this definition with a "hole" in our synthesis scenario.
 ctrl_branch <<= pyrtl.enum_mux(
         inst_op,
         {
@@ -109,7 +113,7 @@ ctrl_branch <<= pyrtl.enum_mux(
         },
         default=0)
 
-#ctrl_write <<= pyrtl.net_hole('hole_ctrl_write', 1, inst_op)
+# Note: We replace this definition with a "hole" in our synthesis scenario.
 ctrl_write <<= pyrtl.enum_mux(
         inst_op,
         {
@@ -181,15 +185,17 @@ for i in range(16):
     else:
         rf_init[i] = 0
 
+# Load a program
 imem_init = {
-    0: 0x1112,
-    1: 0x1333,
-    2: 0x6007,
-    3: 0x2221,
-    4: 0x1000,
-    9: 0x2121,
+    0: 0x1112, # ADD r1 r2 r1
+    1: 0x1333, # ADD r3 r3 r3
+    2: 0x6007, # JUMP 0x7
+    3: 0x2221, # SUB r2 r1 r2
+    4: 0x1000, # ADD r0 r0 r0
+    9: 0x2121, # SUB r1 r1 r2
 }
 
+# Initialize simulation with instructions and reg file
 sim = pyrtl.Simulation(tracer=sim_trace, memory_value_map={
     rf : rf_init,
     imem : imem_init,
@@ -209,4 +215,13 @@ sim.step({'stall': 1})
 sim_trace.render_trace(symbol_len=10, segment_size=1)
 
 # Print out the register file
+print("Reg file contents:")
 print(sim.inspect_mem(rf))
+
+# Below prints a "netlist" representation of the design.
+# Essentially a directed graph with nodes as gates (operations over wire vectors)
+# and edges as wires connecting them.
+# ---
+# pyrtl.optimize()
+# print("Printing netlist...")
+# print(pyrtl.working_block())
